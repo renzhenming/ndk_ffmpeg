@@ -28,6 +28,7 @@ public class MainActivity extends Activity {
 				android.R.id.text1, videoArray);
 		sp_video.setAdapter(adapter);
 		player = new FFmpegUtils();
+		
 	}
 	
 	public void mPlay(View btn){

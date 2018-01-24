@@ -27,6 +27,7 @@
 //重采样
 #include "libswresample/swresample.h"
 
+
 /**
  * 音频播放
  */
@@ -83,14 +84,15 @@ JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_sound
 	uint64_t out_ch_layout = AV_CH_LAYOUT_STEREO;
 	//输出采样格式16bit PCM
 	enum AVSampleFormat out_sample_fmt = AV_SAMPLE_FMT_S16;
-	//输出采样率
-	int out_sample_rate = 44100;
+
 	//获取输入的声道布局
 	uint64_t in_ch_layout = avCodecCtx->channel_layout;
 	//获取输入的采样格式
 	enum AVSampleFormat in_sample_fmt = avCodecCtx->sample_fmt;
 	//获取输入的采样率
 	int in_sample_rate = avCodecCtx->sample_rate;
+	//输出采样率
+	int out_sample_rate = in_sample_rate;
 
 	/*
 	 * struct SwrContext *s,
@@ -124,13 +126,13 @@ JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_sound
 	 FILE *fp_pcm = fopen(output_cstr,"wb");
 	 //输出的声道个数
 	 int out_channel_nb = av_get_channel_layout_nb_channels(out_ch_layout);
-
+	 LOGI("%s","声道个数-》"+avCodecCtx->channels);
 	 //------------------JNI begin 调用Java代码-------------------------
 
 	 //1.调用FFmpegUtils中的createAudioTrack方法获取AudioTrack对象
 	 jclass ffmpeg_class = (*env)->GetObjectClass(env,jthiz);
-	 jmethodID create_audiotrack_mid = (*env)->GetMethodID(env,ffmpeg_class,"createAudioTrack","()Landroid/media/AudioTrack;");
-	 jobject audio_track = (*env)->CallObjectMethod(env,jthiz,create_audiotrack_mid);
+	 jmethodID create_audiotrack_mid = (*env)->GetMethodID(env,ffmpeg_class,"createAudioTrack","(II)Landroid/media/AudioTrack;");
+	 jobject audio_track = (*env)->CallObjectMethod(env,jthiz,create_audiotrack_mid,out_sample_rate, out_channel_nb);
 	 //调用AudioTack play方法
 	 jclass audio_track_class = (*env)->GetObjectClass(env,audio_track);
 	 jmethodID audiotrack_play_mid = (*env)->GetMethodID(env,audio_track_class,"play","()V");
@@ -141,45 +143,50 @@ JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_sound
 	 //-------------------      JNI end       ------------------------
 
 	 while(av_read_frame(avFormatCtx,avPacket)>= 0){
-		 //解码音频数据
-		 result = avcodec_decode_audio4(avCodecCtx,avFrame,&got_frame,avPacket);
-		 if(result < 0){
-		 	LOGI("%s","解码完成");
-		 }
 
-		 //解码一帧成功
-		 if(got_frame>0){
-			 LOGI("解码：%d",index++);
-			 swr_convert(swrCtx,&out_buffer,MAX_AUDIO_FRME_SIZE,avFrame->data,avFrame->nb_samples);
-			 //获取sample的size
-			 int out_buffer_size = av_samples_get_buffer_size(NULL, out_channel_nb,
-						avFrame->nb_samples, out_sample_fmt, 1);
-			 //fwrite(out_buffer,1,out_buffer_size,fp_pcm);
-			 //AudioTrack writePCM数据，通过调用Java代码获取到AudioTrack
+		 //判断筛选音频流去解码，防止播放视频时将视频流也解码出来导致杂音
+		 if(avPacket->stream_index == audio_index){
+			 //解码音频数据
+			 result = avcodec_decode_audio4(avCodecCtx,avFrame,&got_frame,avPacket);
+			 if(result < 0){
+				LOGI("%s","解码完成");
+			 }
 
-			 //调用write方法需要传入一个byte数组，这个数组是包含out_buffer数组内容的，所以需要转换
-			 //创建一个和out_buffer数组同样大小的数组
-			 jbyteArray audio_sample_array = (*env)->NewByteArray(env,out_buffer_size);
-			 //获取可以操作这个数组的指针
-			 jbyte* sample_bytep = (*env)->GetByteArrayElements(env,audio_sample_array,NULL);
-			 //将out_buffer的数据复制到sampe_bytep
-			 memcpy(sample_bytep,out_buffer,out_buffer_size);
-			 //同步数据
-			 (*env)->ReleaseByteArrayElements(env,audio_sample_array,sample_bytep,0);
+			 //解码一帧成功
+			 if(got_frame>0){
+				 LOGI("解码：%d",index++);
+				 swr_convert(swrCtx,&out_buffer,MAX_AUDIO_FRME_SIZE,(const uint8_t **)avFrame->data,avFrame->nb_samples);
+				 //获取sample的size
+				 int out_buffer_size = av_samples_get_buffer_size(NULL, out_channel_nb,
+							avFrame->nb_samples, out_sample_fmt, 1);
+				 fwrite(out_buffer,1,out_buffer_size,fp_pcm);
+				 //AudioTrack writePCM数据，通过调用Java代码获取到AudioTrack
 
-			 (*env)->CallIntMethod(env,audio_track,audiotrack_write_mid,
-					 audio_sample_array,0,out_buffer_size);
+				 //调用write方法需要传入一个byte数组，这个数组是包含out_buffer数组内容的，所以需要转换
+				 //创建一个和out_buffer数组同样大小的数组
+				 jbyteArray audio_sample_array = (*env)->NewByteArray(env,out_buffer_size);
+				 //获取可以操作这个数组的指针
+				 jbyte* sample_bytep = (*env)->GetByteArrayElements(env,audio_sample_array,NULL);
+				 //将out_buffer的数据复制到sampe_bytep
+				 memcpy(sample_bytep,out_buffer,out_buffer_size);
+				 //同步数据
+				 (*env)->ReleaseByteArrayElements(env,audio_sample_array,sample_bytep,0);
 
-			 //操作完成一次就释放一次数组，否则会溢出
-			 (*env)->DeleteLocalRef(env,audio_sample_array);
-			 usleep(1000 * 16);
+				 (*env)->CallIntMethod(env,audio_track,audiotrack_write_mid,
+						 audio_sample_array,0,out_buffer_size);
+
+				 //操作完成一次就释放一次数组，否则会溢出
+				 (*env)->DeleteLocalRef(env,audio_sample_array);
+				 usleep(1000 * 16);
+			 }
+
 		 }
 
 		 av_free_packet(avPacket);
 	 }
 	 fclose(fp_pcm);
-	 av_frame_free(avFrame);
-	 av_freep(out_buffer);
+	 av_frame_free(&avFrame);
+	 av_free(out_buffer);
 	 swr_free(&swrCtx);
 	 avcodec_close(avCodecCtx);
 	 avformat_close_input(&avFormatCtx);

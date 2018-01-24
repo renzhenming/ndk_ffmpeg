@@ -1,5 +1,7 @@
 package com.example.ndk_ffmpeg;
 
+import javax.security.auth.login.LoginException;
+
 import android.R.integer;
 import android.media.AudioFormat;
 import android.media.AudioManager;
@@ -17,12 +19,21 @@ public class FFmpegUtils {
 	
 	public native void sound(String input,String output);
 	
-	public AudioTrack createAudioTrack(){
-		//固定格式的音频码流
-		int sampleRateInHz = 44100;
-		
+	/**
+	 * 创建AudioTrack用于播放音频
+	 * @param nb_channels 声道个数
+	 * @return
+	 */
+	public AudioTrack createAudioTrack(int sampleRateInHz,int nb_channels){
 		//声道布局
-		int channelConfig = AudioFormat.CHANNEL_OUT_STEREO;//立体声
+		int channelConfig;
+		if(nb_channels == 1){
+			channelConfig = android.media.AudioFormat.CHANNEL_OUT_MONO;
+		}else if(nb_channels == 2){
+			channelConfig = android.media.AudioFormat.CHANNEL_OUT_STEREO;
+		}else{
+			channelConfig = android.media.AudioFormat.CHANNEL_OUT_STEREO;
+		}
 		
 		int audioFormat = AudioFormat.ENCODING_PCM_16BIT;
 		
