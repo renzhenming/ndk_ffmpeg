@@ -44,5 +44,10 @@ public class MainActivity extends Activity {
 		String output = new File(Environment.getExternalStorageDirectory(),"music_sound.pcm").getAbsolutePath();
 		player.sound(input, output);
 	}
+	public void mBothPlay(View btn){
+		String input = new File(Environment.getExternalStorageDirectory(),"input.mp4").getAbsolutePath();
+		Surface surface = videoView.getHolder().getSurface();
+		player.play(input, surface);
+	}
 
 }

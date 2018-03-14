@@ -20,7 +20,7 @@
 					<folderInfo id="com.android.toolchain.gcc.713731199.211758221" name="/" resourcePath="">
 						<toolChain id="com.android.toolchain.gcc.494026484" name="Android GCC" superClass="com.android.toolchain.gcc">
 							<targetPlatform binaryParser="org.eclipse.cdt.core.ELF" id="com.android.targetPlatform.1989847662" isAbstract="false" superClass="com.android.targetPlatform"/>
-							<builder id="com.android.builder.697785589" keepEnvironmentInBuildfile="false" managedBuildOn="false" name="Android Builder" superClass="com.android.builder">
+							<builder arguments="NDK_DEBUG=1" command="ndk-build" id="com.android.builder.697785589" keepEnvironmentInBuildfile="false" managedBuildOn="false" name="Android Builder" superClass="com.android.builder">
 								<outputEntries>
 									<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="outputPath" name="obj"/>
 									<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="outputPath" name="libs"/>
@@ -49,5 +49,9 @@
 			<autodiscovery enabled="true" problemReportingEnabled="true" selectedProfileId="com.android.AndroidPerProjectProfile"/>
 		</scannerConfigBuildInfo>
 	</storageModule>
-	<storageModule moduleId="refreshScope"/>
+	<storageModule moduleId="refreshScope" versionNumber="2">
+		<configuration configurationName="Default">
+			<resource resourceType="PROJECT" workspacePath="/ndk_ffmpeg"/>
+		</configuration>
+	</storageModule>
 </cproject>

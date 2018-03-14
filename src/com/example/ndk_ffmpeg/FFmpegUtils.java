@@ -19,6 +19,8 @@ public class FFmpegUtils {
 	
 	public native void sound(String input,String output);
 	
+	public native void play(String input,Surface surface);
+	
 	/**
 	 * 创建AudioTrack用于播放音频
 	 * @param nb_channels 声道个数

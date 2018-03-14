@@ -18,6 +18,9 @@ JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_render
 JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_sound
   (JNIEnv *, jobject, jstring, jstring);
 
+JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_play
+  (JNIEnv *, jobject, jstring, jobject);
+
 #ifdef __cplusplus
 }
 #endif

@@ -28,6 +28,12 @@
 	    	android:layout_height="50dp"
 	    	android:text="播放音频"
 	    	android:onClick="mSound" />
+        
+        <Button
+	    	android:layout_width="match_parent"
+	    	android:layout_height="50dp"
+	    	android:text="播放音视频"
+	    	android:onClick="mBothPlay" />
         </LinearLayout>
     </LinearLayout>
 
