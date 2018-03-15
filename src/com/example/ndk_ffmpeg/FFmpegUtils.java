@@ -1,8 +1,5 @@
 package com.example.ndk_ffmpeg;
 
-import javax.security.auth.login.LoginException;
-
-import android.R.integer;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;

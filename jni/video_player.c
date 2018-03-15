@@ -55,7 +55,7 @@ void init_input_format_ctx(struct Player *player,const char* input_cstr ){
 	av_register_all();
 
 	//封装格式上下文，统领全局的结构体，保存了视频文件封装格式的相关信息
-	AVFormatContext *avFormatCtx = favformat_alloc_context();
+	AVFormatContext *avFormatCtx = avformat_alloc_context();
 
 	//2.打开输入视频文件(AVFormatContext **ps, const char *url, AVInputFormat *fmt, AVDictionary **options)
 	if(avformat_open_input(&avFormatCtx,input_cstr,NULL,NULL)!=0){
@@ -90,7 +90,7 @@ void init_input_format_ctx(struct Player *player,const char* input_cstr ){
  * stream_index:音频或者视频的index，获取对应的解码器
  */
 void init_codec_context(struct Player *player,int stream_index){
-	AVFormatContext *avFormatCtx = player.avFormatCtx;
+	AVFormatContext *avFormatCtx = player->avFormatCtx;
 
 	//从视频流中获取视频编解码器上下文
 	AVCodecContext *avCodecCtx = avFormatCtx->streams[stream_index]->codec;
@@ -126,7 +126,7 @@ void decode_data(void* arg){
 	while(av_read_frame(avFormatCtx,avPacket)>=0){
 		if(avPacket->stream_index == player->video_stream_index){
 			decode_video(player,avPacket);
-			LOGI("video_frame_count:%d",video_frame_count++);
+			LOGI("video_frame_count:%d",frame_count++);
 		}
 		//读取完一次释放一次
 		av_free_packet(avPacket);
@@ -141,7 +141,7 @@ void decode_video_prepare(JNIEnv *env,struct Player *player,jobject surface){
 /**
  * 解码视频
  */
-void decode_video(struct Player player,AVPacket *avPacket){
+void decode_video(struct Player *player,AVPacket *avPacket){
 
 	//开辟缓冲区AVFrame用于存储解码后的像素数据(YUV)
 	AVFrame *yuv_Frame = av_frame_alloc();
@@ -150,13 +150,13 @@ void decode_video(struct Player player,AVPacket *avPacket){
 	//绘制时的缓冲区
 	ANativeWindow_Buffer outBuffer;
 
-	AVCodecContext *avCodecCtx = player.avCodecCtx[player->video_stream_index];
+	AVCodecContext *avCodecCtx = player->avCodecCtx[player->video_stream_index];
 
 	//是否获取到视频像素数据的标记(Zero if no frame could be decompressed, otherwise, it is nonzero.)
 	int got_picture;
 	int decode_result;
 	//筛选视频压缩数据（根据流的索引位置判断）
-	if(avPacket->stream_index == video_index){
+	if(avPacket->stream_index == player->video_stream_index){
 		//7.解码一帧视频压缩数据，得到视频像素数据
 		decode_result = avcodec_decode_video2(avCodecCtx,yuv_Frame,&got_picture,avPacket);
 
@@ -166,14 +166,10 @@ void decode_video(struct Player player,AVPacket *avPacket){
 		}
 		//为0说明全部解码完成，非0正在解码
 		if (got_picture){
-			LOGI("解码第%d帧",frame_count);
-			//lock
 
 			//设置缓冲区的属性    format 注意格式需要和surfaceview指定的像素格式相同
-			ANativeWindow_setBuffersGeometry(nativeWindow, avCodecCtx->width, avCodecCtx->height, WINDOW_FORMAT_RGBA_8888);
-			ANativeWindow_lock(nativeWindow,&outBuffer,NULL);
-			//fix buffer
-			//YUV-RGBA8888
+			ANativeWindow_setBuffersGeometry(player->nativeWindow, avCodecCtx->width, avCodecCtx->height, WINDOW_FORMAT_RGBA_8888);
+			ANativeWindow_lock(player->nativeWindow,&outBuffer,NULL);
 
 			//设置缓冲区像素格式,rgb_frame的缓冲区与outBuffer.bits时同一块内存
 			avpicture_fill((AVPicture*)rgb_Frame,outBuffer.bits,PIX_FMT_RGBA,avCodecCtx->width,avCodecCtx->height);
@@ -185,7 +181,7 @@ void decode_video(struct Player player,AVPacket *avPacket){
 					rgb_Frame->data[0],rgb_Frame->linesize[0],
 					avCodecCtx->width,avCodecCtx->height);
 			//unlock
-			ANativeWindow_unlockAndPost(nativeWindow);
+			ANativeWindow_unlockAndPost(player->nativeWindow);
 
 			//每次都需要sleep一下，否则会播放一帧之后就崩溃
 			usleep(1000 * 16);
@@ -195,12 +191,12 @@ void decode_video(struct Player player,AVPacket *avPacket){
 	av_frame_free(&rgb_Frame);
 }
 
-JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_render
+JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_play
 (JNIEnv *env, jobject jobj, jstring input_jstr, jobject surface){
 		const char* input_cstr = (*env)->GetStringUTFChars(env,input_jstr,NULL);
 
 		//给结构体申请一块空间(最后需要free掉)
-		struct Player *player = (struct Player)malloc(sizeof(struct Player));
+		struct Player *player = (struct Player*)malloc(sizeof(struct Player));
 		//初始化封装格式上下文
 		init_input_format_ctx(player,input_cstr);
 
@@ -212,22 +208,20 @@ JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_render
 
 		decode_video_prepare(env,player,surface);
 		//创建子线程解码
-		//(pthread_t *thread, pthread_attr_t const * attr,
-        //void *(*start_routine)(void *), void * arg);
 		pthread_create(&(player->decode_threads[video_stream_index]),NULL,decode_data,(void*)player);
 
 
 
-			ANativeWindow_release(nativeWindow);
-
-			(*env)->ReleaseStringUTFChars(env,input_jstr,input_cstr);
-
-
-
-			avcodec_close(avCodecCtx);
-
-			avformat_free_context(avFormatCtx);
-
-
-			free(player);
+//			ANativeWindow_release(nativeWindow);
+//
+//		(*env)->ReleaseStringUTFChars(env,input_jstr,input_cstr);
+//
+//
+//
+//			avcodec_close(avCodecCtx);
+//
+//			avformat_free_context(avFormatCtx);
+//
+//
+//			free(player);
 }
