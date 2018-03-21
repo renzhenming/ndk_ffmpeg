@@ -45,7 +45,9 @@ public class MainActivity extends Activity {
 		player.sound(input, output);
 	}
 	public void mBothPlay(View btn){
-		String input = new File(Environment.getExternalStorageDirectory(),"input.mp4").getAbsolutePath();
+		//String input = new File(Environment.getExternalStorageDirectory(),"input.mp4").getAbsolutePath();
+		String video = sp_video.getSelectedItem().toString();
+		String input = new File(Environment.getExternalStorageDirectory(),video).getAbsolutePath();
 		Surface surface = videoView.getHolder().getSurface();
 		player.play(input, surface);
 	}
