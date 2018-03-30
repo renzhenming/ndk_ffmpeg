@@ -51,7 +51,7 @@ include $(PREBUILT_SHARED_LIBRARY)
 #myapp
 include $(CLEAR_VARS)
 LOCAL_MODULE := myffmpeg
-LOCAL_SRC_FILES :=  video_player.c
+LOCAL_SRC_FILES :=  video_player.c  queue.c
 ##-landroid参数 for native windows
 LOCAL_LDLIBS := -llog -landroid -ljnigraphics
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/include/ffmpeg

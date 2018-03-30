@@ -116,7 +116,7 @@ obj/local/armeabi/objs-debug/myffmpeg/video_player.o: jni/video_player.c \
  jni/include/ffmpeg/libswscale/swscale.h \
  jni/include/ffmpeg/libswscale/version.h \
  jni/include/ffmpeg/libswresample/swresample.h \
- jni/include/ffmpeg/libswresample/version.h
+ jni/include/ffmpeg/libswresample/version.h jni/queue.h
 
 jni/com_example_ndk_ffmpeg_FFmpegUtils.h:
 
@@ -371,3 +371,5 @@ jni/include/ffmpeg/libswscale/version.h:
 jni/include/ffmpeg/libswresample/swresample.h:
 
 jni/include/ffmpeg/libswresample/version.h:
+
+jni/queue.h:

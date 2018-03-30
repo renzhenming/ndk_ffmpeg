@@ -30,12 +30,21 @@
 //重采样
 #include "libswresample/swresample.h"
 
+#include "queue.h"
+
 //nb_streams，视频文件中存在，音频流，视频流，字幕
 #define MAX_STREAM 2
 //音频重采样缓冲区大小
 #define MAX_AUDIO_FRME_SIZE 48000 * 4
 
-struct Player{
+//队列中AVPacket的个数
+#define PACKET_QUEUE_SIZE 50
+
+typedef struct _Player Player;
+
+typedef struct _DecodeData DecodeData;
+
+struct _Player{
 	//java虚拟机对象
 	JavaVM *javaVM;
 
@@ -44,6 +53,8 @@ struct Player{
 	//音频流视频流索引位置
 	int video_stream_index;
 	int audio_stream_index;
+	//流的总个数
+	int captrue_streams_num;
 	//解码器上下文数组
 	AVCodecContext *avCodecCtx[MAX_STREAM];
 	//解码线程id
@@ -63,15 +74,31 @@ struct Player{
 	//输出的声道个数
 	int out_channel_nb;
 
-	//JNI
+	//AudioTrack对象
 	jobject audio_track;
+	//AudioTrack类中的write方法的id
 	jmethodID audio_track_write_mid;
+
+	//生产者线程pthread_t
+	pthread_t thread_read_from_stream;
+
+	//队列数组
+	Queue *packets[MAX_STREAM];
+};
+
+/**
+ * 封装Player和stream_index，以便于在解码的时候可以根据当前这个Player
+ * 的stream_index获取对应的队列，音频就取音频队列，视频就取视频队列
+ */
+struct _DecodeData{
+	Player *player;
+	int stream_index;
 };
 
 /**
  * 初始化封装格式上下文，获取音频视频流的索引位置
  */
-void init_input_format_ctx(struct Player *player,const char* input_cstr ){
+void init_input_format_ctx(Player *player,const char* input_cstr ){
 	//1.注册所有组件
 	av_register_all();
 
@@ -89,6 +116,11 @@ void init_input_format_ctx(struct Player *player,const char* input_cstr ){
 		LOGE("%s","无法获取视频文件信息");
 		return;
 	}
+
+	//保存流的总个数
+	player->captrue_streams_num = avFormatCtx->nb_streams;
+	LOGI("captrue_streams_no:%d",player->captrue_streams_num);
+
 	//4.获取音频和视频流的索引位置
 	int i;
 	for(i = 0; i <avFormatCtx->nb_streams; i++){
@@ -110,7 +142,7 @@ void init_input_format_ctx(struct Player *player,const char* input_cstr ){
  *
  * stream_index:音频或者视频的index，获取对应的解码器
  */
-void init_codec_context(struct Player *player,int stream_index){
+void init_codec_context(Player *player,int stream_index){
 	AVFormatContext *avFormatCtx = player->avFormatCtx;
 
 	//从视频流或音频流中获取对应的解码器上下文
@@ -135,29 +167,34 @@ void init_codec_context(struct Player *player,int stream_index){
 
 //子线程解码
 void decode_data(void* arg){
-	struct Player *player = (struct Player*)arg;
+
+	DecodeData *decode_data = (DecodeData *)arg;
+	Player *player = decode_data->player;
+	int stream_index = decode_data->stream_index;
+
+	//根据stream_index获取对应的AVPacket队列
+	Queue *queue = player->packets[stream_index];
+
 	AVFormatContext *avFormatCtx = player->avFormatCtx;
 
-	//开辟缓冲区AVPacket用于存储一帧一帧的压缩数据（H264）
-	AVPacket *avPacket =(AVPacket*)av_mallocz(sizeof(AVPacket));
 
-	int frame_count = 0;
+	int video_frame_count = 0,audio_frame_count = 0;
 
 	//每次读取一帧,存入avPacket
-	while(av_read_frame(avFormatCtx,avPacket)>=0){
-		if(avPacket->stream_index == player->video_stream_index){
+	for(;;){
+		//从队列中获取AVPacket
+		AVPacket *packet = (AVPacket*)queue_pop(queue);
+
+		if(stream_index == player->video_stream_index){
 			//解码视频
-			//decode_video(player,avPacket);
-			LOGI("video_frame_count:%d",frame_count++);
-		}else if(avPacket->stream_index==player->audio_stream_index){
-			//解码音频，这里曾经出现了一个小问题，我在测试解码音频的时候，将解码视频的子线程注释了，然而在这里这个位置
-			//上边的decode_video方法没有注释，导致播放的时候，视频也同时进行了播放，并且由于音频和视频在同一个线程中解码，导致
-			//音频和视频都有一定程度的卡顿现象，目前达到的效果只是分别开启线程播放视频或者单独播放音频，音视频同步尚未尝试
-			decode_audio(player,avPacket);
-			LOGI("audio_frame_count:%d",frame_count++);
+			decode_video(player,packet);
+			LOGI("video_frame_count:%d",video_frame_count++);
+		}else if(stream_index==player->audio_stream_index){
+			decode_audio(player,packet);
+			LOGI("audio_frame_count:%d",audio_frame_count++);
 		}
 		//读取完一次释放一次
-		av_free_packet(avPacket);
+		av_free_packet(packet);
 	}
 	LOGI("解码完成");
 
@@ -166,7 +203,7 @@ void decode_data(void* arg){
 /**
  * 解码音频准备
  */
-void decode_audio_prepare(struct Player *player){
+void decode_audio_prepare(Player *player){
 
 	AVCodecContext *avCodecCtx = player->avCodecCtx[player->audio_stream_index];
 
@@ -209,7 +246,7 @@ void decode_audio_prepare(struct Player *player){
 	player->swrCtx = swrCtx;
 }
 
-void jni_audio_prepare(JNIEnv *env,jobject jthiz,struct Player *player){
+void jni_audio_prepare(JNIEnv *env,jobject jthiz,Player *player){
 	//获取播放器工具类class
 	jclass player_class = (*env)->GetObjectClass(env,jthiz);
 
@@ -238,7 +275,7 @@ void jni_audio_prepare(JNIEnv *env,jobject jthiz,struct Player *player){
 /**
  * 解码音频
  */
-void decode_audio(struct Player *player,AVPacket *avPacket){
+void decode_audio(Player *player,AVPacket *avPacket){
 
 	AVCodecContext *avFormatCtx = player->avCodecCtx[player->audio_stream_index];
 
@@ -299,14 +336,14 @@ void decode_audio(struct Player *player,AVPacket *avPacket){
 /**
  * 解码视频准备
  */
-void decode_video_prepare(JNIEnv *env,struct Player *player,jobject surface){
+void decode_video_prepare(JNIEnv *env,Player *player,jobject surface){
 	//窗体  保存到结构体中
 	player->nativeWindow = ANativeWindow_fromSurface(env,surface);
 }
 /**
  * 解码视频
  */
-void decode_video(struct Player *player,AVPacket *avPacket){
+void decode_video(Player *player,AVPacket *avPacket){
 
 	//开辟缓冲区AVFrame用于存储解码后的像素数据(YUV)
 	AVFrame *yuv_Frame = av_frame_alloc();
@@ -356,13 +393,60 @@ void decode_video(struct Player *player,AVPacket *avPacket){
 	av_frame_free(&rgb_Frame);
 }
 
+/**
+ * 初始化音频视频队列，长度50
+ */
+void player_init_queues(Player *player){
+	int i;
+	for(i = 0 ; i < player->captrue_streams_num;i++){
+		//有几个流要解析就初始化几个队列
+		Queue *queue = queue_init(PACKET_QUEUE_SIZE);
+		//将队列存入队列数组
+		player->packets[i] = queue;
+	}
+}
+
+/**
+ * 生产者线程：负责不断的读取视频文件中AVPacket，分别放入两个队列中
+ */
+void *player_read_stream(Player *player){
+
+	//栈内存上保存一个AVPacket
+	AVPacket packet,*pkt = &packet;
+
+	int ret;
+
+	for(;;){
+		//int av_read_frame(AVFormatContext *s, AVPacket *pkt);
+		//av_read_frame @return 0 if OK, < 0 on error or end of file
+		ret = av_read_frame(player->avFormatCtx,pkt);
+
+		//到文件结尾
+		if(ret < 0){
+			break;
+		}
+		//根据AVPacket->stream_index获取对应的队列，
+		Queue *queue = player->packets[pkt->stream_index];
+
+		//示范队列内存释放
+		//queue_free(queue,packet_free_fun);
+
+		//将AVPacket压入队列
+		AVPacket *packet_data = queue_push(queue);
+
+		//队列中当前的位置指向这个packet，保存地址
+		packet_data = pkt;
+	}
+
+}
+
 JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_play
 (JNIEnv *env, jobject jobj, jstring input_jstr, jobject surface){
 
 		const char* input_cstr = (*env)->GetStringUTFChars(env,input_jstr,NULL);
 
 		//给结构体申请一块空间(最后需要free掉)
-		struct Player *player = (struct Player*)malloc(sizeof(struct Player));
+		Player *player = (Player*)malloc(sizeof(Player));
 		//获取Java虚拟机对象
 		(*env)->GetJavaVM(env,&(player->javaVM));
 		//初始化封装格式上下文
@@ -378,11 +462,31 @@ JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_play
 		decode_audio_prepare(player);
 
 		jni_audio_prepare(env,jobj,player);
+
+		//初始化队列
+		player_init_queues(player);
+
+		//生产者线程
+		/**
+		 * int pthread_create(pthread_t *thread, pthread_attr_t const * attr,
+         *          void *(*start_routine)(void *), void * arg)
+		 */
+		pthread_create(&(player->thread_read_from_stream),NULL,player_read_stream,(void *)player);
+
+		//消费者线程,为什么要封装DecodeData加上stream_index，目的只是为了标明当前线程是要解码的是音频还是视频有了这个标记，
+		//我们就可以获取对应的音频视频队列，因为解码的方法都是decode_data，所以要做区分
+		DecodeData video_data = {player,video_stream_index},*video_decode = &video_data;
+		pthread_create(&(player->decode_threads[video_stream_index]),NULL,decode_data,(void*)video_decode);
+
+		DecodeData audio_data = {player,audio_stream_index},*audio_decode = &audio_data;
+		pthread_create(&(player->decode_threads[audio_stream_index]),NULL,decode_data,(void*)audio_decode);
+
+
 		//int pthread_create(pthread_t *thread, pthread_attr_t const * attr,
 		//void *(*start_routine)(void *), void * arg);
 		//创建子线程解码视频
 		//pthread_create(&(player->decode_threads[video_stream_index]),NULL,decode_data,(void*)player);
 		//创建子线程解码音频
-		pthread_create(&(player->decode_threads[audio_stream_index]),NULL,decode_data,(void*)player);
+		//pthread_create(&(player->decode_threads[audio_stream_index]),NULL,decode_data,(void*)player);
 
 }
