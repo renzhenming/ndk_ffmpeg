@@ -27,7 +27,7 @@ struct _Queue{
 /**
  * 初始化队列
  */
-Queue* queue_init(int size){
+Queue* queue_init(int size,queue_fill_fun fill_func){
 	//开辟空间存放队列
 	Queue *queue = (Queue *)malloc(sizeof(Queue));
 	//初始化队列的值
@@ -41,7 +41,7 @@ Queue* queue_init(int size){
 	//为数组中的每一个元素开辟空间
 	int i;
 	for(i = 0 ; i < size ; i ++){
-		queue->tab[i]=malloc(sizeof(*queue->tab));
+		queue->tab[i]=fill_func();
 	}
 
 	return queue;
@@ -75,6 +75,7 @@ int queue_get_next(Queue *queue,int current){
 void *queue_push(Queue *queue){
 	int current = queue->next_to_write;
 	queue->next_to_write = queue_get_next(queue,current);
+	LOGI("queue_push queue:%#x, %d",queue,current);
 	return queue->tab[current];
 }
 
@@ -85,6 +86,7 @@ void *queue_push(Queue *queue){
 void *queue_pop(Queue *queue){
 	int current = queue->next_to_read;
 	queue->next_to_read = queue_get_next(queue,current);
+	LOGI("queue_pop queue:%#x, %d",queue,current);
 	return queue->tab[current];
 }
 
