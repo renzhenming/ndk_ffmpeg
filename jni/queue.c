@@ -1,5 +1,5 @@
 #include "queue.h"
-
+#include <pthread.h>
 /**
  * 队列结构体，用于存放AVPacket指针
  * 这里使用生产者消费真模式来使用队列，至少需要两个队列实例，分别用于存放音频AVPacket和视频AVPacket
@@ -72,10 +72,26 @@ int queue_get_next(Queue *queue,int current){
  * 入队
  * 当有元素需要存入队列的时候，获取到队列中下一个位置的指针，将这个指针指向将要入队的元素
  */
-void *queue_push(Queue *queue){
+void *queue_push(Queue *queue,pthread_mutex_t *mutex,pthread_cond_t *cond){
 	int current = queue->next_to_write;
+	int next_to_write;
+	for(;;){
+		//下一个要读的位置等于下一个要写的，等待写入完成再读，不等于就继续，不等于就继续
+		next_to_write = queue_get_next(queue,current);
+		if(queue->next_to_read != next_to_write){
+			break;
+		}
+
+		//相等，就等待
+		//int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+		pthread_cond_wait(cond,mutex);
+	}
+
 	queue->next_to_write = queue_get_next(queue,current);
 	LOGI("queue_push queue:%#x, %d",queue,current);
+
+	//通知所有等待条件变量的线程int pthread_cond_broadcast(pthread_cond_t *cond);
+	pthread_cond_broadcast(cond);
 	return queue->tab[current];
 }
 
@@ -83,10 +99,19 @@ void *queue_push(Queue *queue){
  * 出队
  * 当要读取下一个元素的时候，获取到队列中下一个位置的指针，将这个指针返回
  */
-void *queue_pop(Queue *queue){
+void* queue_pop(Queue *queue,pthread_mutex_t *mutex, pthread_cond_t *cond){
 	int current = queue->next_to_read;
+
+	for(;;){
+		if(queue->next_to_read != queue->next_to_write){
+			break;
+		}
+		pthread_cond_wait(cond,mutex);
+	}
 	queue->next_to_read = queue_get_next(queue,current);
 	LOGI("queue_pop queue:%#x, %d",queue,current);
+
+	pthread_cond_broadcast(cond);
 	return queue->tab[current];
 }
 

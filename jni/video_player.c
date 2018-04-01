@@ -43,6 +43,9 @@ typedef struct _Player Player;
 
 typedef struct _DecodeData DecodeData;
 
+#define MIN_SLEEP_TIME_US 1000ll
+#define AUDIO_TIME_ADJUST_US -200000ll
+
 struct _Player {
 	//java虚拟机对象
 	JavaVM *javaVM;
@@ -83,6 +86,16 @@ struct _Player {
 
 	//队列数组
 	Queue *packets[MAX_STREAM];
+
+	//互斥锁
+	pthread_mutex_t mutex;
+	//条件变量
+	pthread_cond_t cond;
+
+	//视频开始播放的时间
+	int64_t start_time;
+
+	int64_t audio_clock;
 };
 
 /**
@@ -181,14 +194,20 @@ void decode_data(void* arg) {
 	//每次读取一帧,存入avPacket
 	for (;;) {
 		//从队列中获取AVPacket
-		AVPacket *packet = (AVPacket*) queue_pop(queue);
+
+		//加锁
+		pthread_mutex_lock(&player->mutex);
+		AVPacket *packet = (AVPacket*) queue_pop(queue, &player->mutex,
+				&player->cond);
+		//解锁
+		pthread_mutex_unlock(&player->mutex);
 
 		if (stream_index == player->video_stream_index) {
 			//解码视频
-			//decode_video(player, packet);
+			decode_video(player, packet);
 			LOGI("video_frame_count:%d", video_frame_count++);
 		} else if (stream_index == player->audio_stream_index) {
-			decode_audio(player,packet);
+			decode_audio(player, packet);
 			LOGI("audio_frame_count:%d", audio_frame_count++);
 		}
 
@@ -278,8 +297,10 @@ void jni_audio_prepare(JNIEnv *env, jobject jthiz, Player *player) {
  * 解码音频
  */
 void decode_audio(Player *player, AVPacket *avPacket) {
-
-	AVCodecContext *avFormatCtx = player->avCodecCtx[player->audio_stream_index];
+	//获取AVStream，并从中获取stream->time_base
+	AVFormatContext *avFormatCtx = player->avFormatCtx;
+	AVStream *stream = avFormatCtx->streams[player->video_stream_index];
+	AVCodecContext *avCodecCtx = player->avCodecCtx[player->audio_stream_index];
 
 	//开辟空间存储压缩数据
 	AVFrame *avFrame = av_frame_alloc();
@@ -289,7 +310,7 @@ void decode_audio(Player *player, AVPacket *avPacket) {
 	 * int avcodec_decode_audio4(AVCodecContext *avctx, AVFrame *frame,
 	 *      int *got_frame_ptr, const AVPacket *avpkt);
 	 */
-	avcodec_decode_audio4(avFormatCtx, avFrame, &got_frame, avPacket);
+	avcodec_decode_audio4(avCodecCtx, avFrame, &got_frame, avPacket);
 	//重采样缓冲区
 	uint8_t *out_buffer = av_malloc(MAX_AUDIO_FRME_SIZE);
 	//解码一帧成功
@@ -308,6 +329,13 @@ void decode_audio(Player *player, AVPacket *avPacket) {
 		int out_buffer_size = av_samples_get_buffer_size(NULL,
 				player->out_channel_nb, avFrame->nb_samples,
 				player->out_sample_fmt, 1);
+
+		int64_t pts = avPacket->pts;
+		if(pts != AV_NOPTS_VALUE){
+			player->audio_clock = av_rescale_q(pts,stream->time_base,AV_TIME_BASE_Q);
+			LOGI("player_write_audio - read from pts");
+			player_wait_for_frame(player,player->audio_clock+AUDIO_TIME_ADJUST_US,player->audio_stream_index);
+		}
 
 		//关联当前线程的JNIEnv
 		JavaVM *javaVM = player->javaVM;
@@ -353,7 +381,9 @@ void decode_video_prepare(JNIEnv *env, Player *player, jobject surface) {
  * 解码视频
  */
 void decode_video(Player *player, AVPacket *avPacket) {
-
+	//获取AVStream，并从中获取stream->time_base
+	AVFormatContext *avFormatCtx = player->avFormatCtx;
+	AVStream *stream = avFormatCtx->streams[player->video_stream_index];
 	//开辟缓冲区AVFrame用于存储解码后的像素数据(YUV)
 	AVFrame *yuv_Frame = av_frame_alloc();
 	//开辟缓冲区AVFrame用于存储转成rgba8888后的像素数据(YUV)
@@ -367,8 +397,7 @@ void decode_video(Player *player, AVPacket *avPacket) {
 	int got_picture;
 
 	//7.解码一帧视频压缩数据，得到视频像素数据
-	avcodec_decode_video2(avCodecCtx, yuv_Frame, &got_picture,
-			avPacket);
+	avcodec_decode_video2(avCodecCtx, yuv_Frame, &got_picture, avPacket);
 
 	//为0说明全部解码完成，非0正在解码
 	if (got_picture) {
@@ -387,6 +416,13 @@ void decode_video(Player *player, AVPacket *avPacket) {
 				yuv_Frame->data[2], yuv_Frame->linesize[2], yuv_Frame->data[1],
 				yuv_Frame->linesize[1], rgb_Frame->data[0],
 				rgb_Frame->linesize[0], avCodecCtx->width, avCodecCtx->height);
+
+		//计算延迟
+		int64_t pts = av_frame_get_best_effort_timestamp(yuv_Frame);
+		//不同时间基时间转换
+		int64_t time = av_rescale_q(pts, stream->time_base, AV_TIME_BASE_Q);
+		//等待time长的时间，时间结束，线程继续执行或者被唤醒继续执行
+		player_wait_for_frame(player, time, player->video_stream_index);
 		//unlock
 		ANativeWindow_unlockAndPost(player->nativeWindow);
 
@@ -396,6 +432,50 @@ void decode_video(Player *player, AVPacket *avPacket) {
 
 	av_frame_free(&yuv_Frame);
 	av_frame_free(&rgb_Frame);
+}
+
+/**
+ * 获取视频当前播放时间
+ */
+int64_t player_get_current_video_time(Player *player) {
+	int64_t current_time = av_gettime();
+	return current_time - player->start_time;
+}
+/**
+ * 延迟
+ */
+void player_wait_for_frame(Player *player, int64_t stream_time, int stream_no) {
+	pthread_mutex_lock(&player->mutex);
+	for (;;) {
+		int64_t current_video_time = player_get_current_video_time(player);
+		int64_t sleep_time = stream_time - current_video_time;
+		if (sleep_time < -300000ll) {
+			// 300 ms late
+			int64_t new_value = player->start_time - sleep_time;
+			LOGI("player_wait_for_frame[%d] correcting %f to %f because late",
+					stream_no, (av_gettime() - player->start_time) / 1000000.0,
+					(av_gettime() - new_value) / 1000000.0);
+			player->start_time = new_value;
+			pthread_cond_broadcast(&player->cond);
+		}
+		if (sleep_time <= MIN_SLEEP_TIME_US) {
+			// We do not need to wait if time is slower then minimal sleep time
+			break;
+		}
+
+		if (sleep_time > 500000ll) {
+			// if sleep time is bigger then 500ms just sleep this 500ms
+			// and check everything again
+			sleep_time = 500000ll;
+		}
+		//等待指定时长
+		int timeout_ret = pthread_cond_timeout_np(&player->cond, &player->mutex,
+				sleep_time / 1000ll);
+
+		// just go further
+		LOGI("player_wait_for_frame[%d] finish", stream_no);
+	}
+	pthread_mutex_unlock(&player->mutex);
 }
 
 /**
@@ -447,8 +527,12 @@ void *player_read_stream(Player *player) {
 		//示范队列内存释放
 		//queue_free(queue,packet_free_fun);
 
+		//加锁
+		pthread_mutex_lock(&player->mutex);
+
 		//将AVPacket压入队列
-		AVPacket *packet_data = queue_push(queue);
+		AVPacket *packet_data = queue_push(queue, &player->mutex,
+				&player->cond);
 
 		//队列中当前的位置指向这个packet，保存地址,这样保存地址的话是不行的，
 		//因为AVPacket packet是栈内存数据，所以当销毁后你保存这个栈内存的地址也是无效的，因为这个地址已经不是它了
@@ -456,6 +540,9 @@ void *player_read_stream(Player *player) {
 
 		//拷贝（间接赋值，拷贝结构体数据）
 		*packet_data = packet;
+
+		//解锁
+		pthread_mutex_unlock(&player->mutex);
 		LOGI("queue:%#x, packet:%#x", queue, packet);
 	}
 
@@ -487,6 +574,12 @@ JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_play(
 	//初始化队列
 	player_init_queues(player);
 
+	//初始化互斥锁int pthread_mutex_init(pthread_mutex_t *mutex,const pthread_mutexattr_t *attr);
+	pthread_mutex_init(&player->mutex, NULL);
+
+	//初始化条件变量int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr);
+	pthread_cond_init(&player->cond, NULL);
+
 	//生产者线程
 	/**
 	 * int pthread_create(pthread_t *thread, pthread_attr_t const * attr,
@@ -495,7 +588,10 @@ JNIEXPORT void JNICALL Java_com_example_ndk_1ffmpeg_FFmpegUtils_play(
 	pthread_create(&(player->thread_read_from_stream), NULL, player_read_stream,
 			(void *) player);
 	//生产开始停留5，保证消费之前生产已经有了东西
-	sleep(5);
+	sleep(1);
+
+	player->start_time = 0;
+
 	//消费者线程,为什么要封装DecodeData加上stream_index，目的只是为了标明当前线程是要解码的是音频还是视频有了这个标记，
 	//我们就可以获取对应的音频视频队列，因为解码的方法都是decode_data，所以要做区分
 	DecodeData video_data = { player, video_stream_index }, *video_decode =
